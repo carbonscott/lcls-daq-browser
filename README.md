@@ -142,7 +142,3 @@ The tool expects a SQLite database with the following tables:
 | message | TEXT | Error message |
 | context_before | TEXT | 10 lines before error |
 | context_after | TEXT | 10 lines after error |
-
-## Related Tools
-
-- [ingest_daq_logs.py](https://github.com/carbonscott/proj-debug-daq) - Script to populate the daq_logs.db from raw DAQ log files
