@@ -1,0 +1,8 @@
+# Binaries
+lcls-daq-browser
+daq-browser
+*.exe
+
+# Build artifacts
+*.test
+*.out
