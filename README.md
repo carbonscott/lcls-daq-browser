@@ -53,10 +53,14 @@ go build -o lcls-daq-browser
 ## Usage
 
 ```bash
-# Auto-discover database in common locations
+# Auto-discover database (checks DAQ_LOG_DIR, then common locations)
 lcls-daq-browser
 
-# Specify database path
+# Set database path via environment variable
+export DAQ_LOG_DIR=/path/to/daq_logs.db
+lcls-daq-browser
+
+# Specify database path explicitly (overrides DAQ_LOG_DIR)
 lcls-daq-browser --db path/to/daq_logs.db
 
 # Jump directly to a hutch and date
@@ -73,11 +77,20 @@ lcls-daq-browser --db daq_logs.db --mouse
 
 | Flag | Description |
 |------|-------------|
-| `--db PATH` | Path to daq_logs.db (auto-discovered if omitted) |
+| `--db PATH` | Path to daq_logs.db (overrides environment variable) |
 | `--hutch NAME` | Start at specific hutch (tmo, mfx, cxi, rix, xcs, xpp) |
 | `--date YYYY-MM-DD` | Jump to specific date |
 | `--time HH:MM` | Jump to nearest error at this time |
 | `--mouse` | Enable mouse support |
+
+### Database Discovery
+
+If `--db` is not specified, the tool searches for the database in this order:
+
+1. `DAQ_LOG_DIR` environment variable
+2. `./daq_logs.db` (current directory)
+3. `../daq_logs.db` (parent directory)
+4. `~/proj-debug-daq/daq_logs.db`
 
 ## Keyboard Shortcuts
 
