@@ -125,6 +125,11 @@ func (m Model) viewDatePicker() string {
 }
 
 func (m Model) viewErrorList() string {
+	// Zoomed mode: render only the focused panel at full width without borders
+	if m.zoomed {
+		return m.viewZoomedPanel()
+	}
+
 	var sb strings.Builder
 
 	// Calculate layout - three panels
@@ -196,7 +201,7 @@ func (m Model) viewErrorList() string {
 		case PanelContext:
 			focusHint = "context"
 		}
-		sb.WriteString(helpStyle.Render(fmt.Sprintf("↑↓ nav [%s]  tab switch  t time  c crit  / filter  a all  q quit", focusHint)))
+		sb.WriteString(helpStyle.Render(fmt.Sprintf("↑↓ nav [%s]  tab switch  t time  c crit  / filter  a all  z zoom  q quit", focusHint)))
 	}
 
 	return sb.String()
@@ -446,4 +451,188 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// viewZoomedPanel renders the focused panel at full screen without borders
+func (m Model) viewZoomedPanel() string {
+	var sb strings.Builder
+
+	// Minimal header with zoom indicator
+	panelName := "Groups"
+	switch m.focusedPanel {
+	case PanelErrors:
+		panelName = "Errors"
+	case PanelContext:
+		panelName = "Context"
+	}
+	header := fmt.Sprintf("[ZOOM: %s]  z to exit  ↑↓ nav  tab switch panel", panelName)
+	sb.WriteString(helpStyle.Render(header))
+	sb.WriteString("\n\n")
+
+	// Available height for content
+	contentHeight := m.height - 3
+
+	switch m.focusedPanel {
+	case PanelGroups:
+		sb.WriteString(m.buildZoomedGroupsPane(m.width, contentHeight))
+	case PanelErrors:
+		sb.WriteString(m.buildZoomedErrorsPane(m.width, contentHeight))
+	case PanelContext:
+		sb.WriteString(m.buildZoomedContextPane(m.width, contentHeight))
+	}
+
+	return sb.String()
+}
+
+// buildZoomedGroupsPane renders groups panel at full width without borders
+func (m Model) buildZoomedGroupsPane(width, height int) string {
+	var sb strings.Builder
+
+	if len(m.groups) == 0 {
+		sb.WriteString("No groups\n")
+		return sb.String()
+	}
+
+	// Calculate visible range
+	visibleCount := height - 2
+	if visibleCount < 5 {
+		visibleCount = 5
+	}
+
+	start := m.groupOffset
+	end := start + visibleCount
+	if end > len(m.groups) {
+		end = len(m.groups)
+	}
+
+	for i := start; i < end; i++ {
+		g := m.groups[i]
+
+		// Cursor indicator
+		cursor := "  "
+		if i == m.groupCursor {
+			cursor = "> "
+		}
+
+		// Format: "> 07:50 component_name (15 errors)"
+		line := fmt.Sprintf("%s%s %-20s (%d errors)", cursor, g.Time, g.Component, len(g.Errors))
+
+		sb.WriteString(line)
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
+}
+
+// buildZoomedErrorsPane renders errors panel at full width without borders
+func (m Model) buildZoomedErrorsPane(width, height int) string {
+	var sb strings.Builder
+
+	errors := m.getFilteredGroupErrors()
+
+	if len(errors) == 0 {
+		if m.messageFilter != "" {
+			sb.WriteString("No matching errors\n")
+		} else {
+			sb.WriteString("No errors in group\n")
+		}
+		return sb.String()
+	}
+
+	// Show current group info
+	if m.groupCursor < len(m.groups) {
+		g := m.groups[m.groupCursor]
+		sb.WriteString(fmt.Sprintf("Group: %s %s (%d errors)\n\n", g.Time, g.Component, len(errors)))
+	}
+
+	// Calculate visible range
+	visibleCount := height - 4
+	if visibleCount < 5 {
+		visibleCount = 5
+	}
+
+	start := m.errorOffset
+	end := start + visibleCount
+	if end > len(errors) {
+		end = len(errors)
+	}
+
+	// Calculate message width
+	msgWidth := width - 15
+	if msgWidth < 20 {
+		msgWidth = 20
+	}
+
+	for i := start; i < end; i++ {
+		e := errors[i]
+
+		// Cursor indicator
+		cursor := "  "
+		if i == m.errorCursor {
+			cursor = "> "
+		}
+
+		// Format: "> [C] error message..."
+		msg := e.Message
+		if len(msg) > msgWidth {
+			msg = msg[:msgWidth-3] + "..."
+		}
+		line := fmt.Sprintf("%s[%s] %s", cursor, e.LogLevel, msg)
+
+		sb.WriteString(line)
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
+}
+
+// buildZoomedContextPane renders context panel at full width without borders
+func (m Model) buildZoomedContextPane(width, height int) string {
+	var sb strings.Builder
+
+	if len(m.groups) == 0 {
+		sb.WriteString("No errors\n")
+		return sb.String()
+	}
+
+	errors := m.getFilteredGroupErrors()
+	if len(errors) == 0 || m.errorCursor >= len(errors) {
+		sb.WriteString("No error selected\n")
+		return sb.String()
+	}
+
+	e := errors[m.errorCursor]
+
+	// Header info
+	sb.WriteString(fmt.Sprintf("Component: %s @ %s\n", e.Component, e.Host))
+	sb.WriteString(fmt.Sprintf("File: %s:%d\n", e.FilePath, e.LineNumber))
+	sb.WriteString(fmt.Sprintf("Type: %s  Level: %s\n\n", e.ErrorType, e.LogLevel))
+
+	// Context before
+	if e.ContextBefore != "" {
+		lines := strings.Split(e.ContextBefore, "\n")
+		startLine := e.LineNumber - len(lines)
+		for i, line := range lines {
+			lineNum := startLine + i
+			if lineNum > 0 {
+				sb.WriteString(fmt.Sprintf("%4d  %s\n", lineNum, line))
+			} else {
+				sb.WriteString(fmt.Sprintf("      %s\n", line))
+			}
+		}
+	}
+
+	// Error line (highlighted with marker)
+	sb.WriteString(fmt.Sprintf(">>> %d  %s\n", e.LineNumber, e.Message))
+
+	// Context after
+	if e.ContextAfter != "" {
+		lines := strings.Split(e.ContextAfter, "\n")
+		for i, line := range lines {
+			lineNum := e.LineNumber + i + 1
+			sb.WriteString(fmt.Sprintf("%4d  %s\n", lineNum, line))
+		}
+	}
+
+	return sb.String()
 }

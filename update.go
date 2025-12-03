@@ -309,6 +309,10 @@ func (m Model) updateErrorList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.updateContextPane()
+
+	// Toggle zoom mode
+	case key.Matches(msg, m.keys.Zoom):
+		m.zoomed = !m.zoomed
 	}
 
 	return m, nil

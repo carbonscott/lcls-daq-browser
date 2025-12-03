@@ -66,6 +66,7 @@ type keyMap struct {
 	Search       key.Binding
 	ClearFilter  key.Binding
 	Refresh      key.Binding
+	Zoom         key.Binding
 }
 
 func defaultKeyMap() keyMap {
@@ -138,11 +139,15 @@ func defaultKeyMap() keyMap {
 			key.WithKeys("r"),
 			key.WithHelp("r", "refresh"),
 		),
+		Zoom: key.NewBinding(
+			key.WithKeys("z"),
+			key.WithHelp("z", "zoom"),
+		),
 	}
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.JumpTime, k.CriticalOnly, k.Search, k.ClearFilter, k.Refresh, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.JumpTime, k.CriticalOnly, k.Search, k.ClearFilter, k.Refresh, k.Zoom, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
@@ -207,6 +212,7 @@ type Model struct {
 	// State
 	ready    bool
 	quitting bool
+	zoomed   bool
 	err      error
 }
 
