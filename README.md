@@ -18,6 +18,24 @@ LCLS DAQ systems generate massive log files (4.5GB+ for a couple months). This t
 - Go 1.24 or later
 - A `daq_logs.db` SQLite database (see [Database Schema](#database-schema))
 
+### Installing Go on SLAC SDF
+
+Go is not available via the module system on SDF. Install it manually:
+
+```bash
+# Download and extract Go (check https://go.dev/dl/ for latest version)
+cd ~
+wget https://go.dev/dl/go1.24.10.linux-amd64.tar.gz
+tar -xzf go1.24.10.linux-amd64.tar.gz
+
+# Add to PATH in ~/.bashrc
+echo 'export PATH=$HOME/go/bin:$PATH' >> ~/.bashrc
+source ~/.bashrc
+
+# Verify installation
+go version
+```
+
 ## Installation
 
 ```bash
