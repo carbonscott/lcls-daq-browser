@@ -22,16 +22,21 @@ func main() {
 
 	// Find database
 	if *dbPath == "" {
-		// Try common locations
-		candidates := []string{
-			"daq_logs.db",
-			"../daq_logs.db",
-			filepath.Join(os.Getenv("HOME"), "proj-debug-daq/daq_logs.db"),
-		}
-		for _, c := range candidates {
-			if _, err := os.Stat(c); err == nil {
-				*dbPath = c
-				break
+		// First check DAQ_LOG_DIR environment variable
+		if envPath := os.Getenv("DAQ_LOG_DIR"); envPath != "" {
+			*dbPath = envPath
+		} else {
+			// Try common locations
+			candidates := []string{
+				"daq_logs.db",
+				"../daq_logs.db",
+				filepath.Join(os.Getenv("HOME"), "proj-debug-daq/daq_logs.db"),
+			}
+			for _, c := range candidates {
+				if _, err := os.Stat(c); err == nil {
+					*dbPath = c
+					break
+				}
 			}
 		}
 	}
