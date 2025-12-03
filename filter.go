@@ -131,7 +131,7 @@ func (m *Model) buildGroups() {
 	var groupOrder []string // Track insertion order for later sorting
 
 	for _, e := range m.filteredErrors {
-		timeStr := extractTimeHHMM(e.Timestamp, e.FilePath)
+		timeStr := extractTimeHHMM(e.Timestamp, e.FilePath, e.DateRef)
 		if timeStr == "" {
 			timeStr = "??:??"
 		}

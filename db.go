@@ -9,6 +9,23 @@ import (
 	"time"
 )
 
+// Pacific timezone for LCLS (handles DST automatically)
+var pacificLoc *time.Location
+
+func init() {
+	var err error
+	pacificLoc, err = time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		// Fallback to fixed PST offset if timezone data unavailable
+		pacificLoc = time.FixedZone("PST", -8*60*60)
+	}
+}
+
+// utcToPacific converts a UTC time to Pacific time
+func utcToPacific(t time.Time) time.Time {
+	return t.In(pacificLoc)
+}
+
 // Error represents a single error from the database
 type Error struct {
 	ID            int
@@ -22,6 +39,7 @@ type Error struct {
 	FilePath      string
 	ContextBefore string
 	ContextAfter  string
+	DateRef       string // Reference date (Pacific) for timezone conversion
 }
 
 // DateSummary represents a date with error counts
@@ -66,17 +84,14 @@ func GetHutchesWithErrors(db *sql.DB) ([]HutchSummary, error) {
 	return hutches, rows.Err()
 }
 
-// GetDatesWithErrors returns dates that have errors for a specific hutch, sorted descending
+// GetDatesWithErrors returns dates (in Pacific time) that have errors for a specific hutch, sorted descending
 func GetDatesWithErrors(db *sql.DB, hutch string) ([]DateSummary, error) {
+	// Fetch individual file records to convert timestamps to Pacific time
 	query := `
-		SELECT DATE(start_timestamp_utc) as date,
-		       COUNT(DISTINCT lf.id) as files,
-		       SUM(error_count) as errors
+		SELECT lf.id, lf.start_timestamp_utc, lf.error_count
 		FROM log_files lf
 		WHERE hutch = ? AND error_count > 0
-		GROUP BY date
-		ORDER BY date DESC
-		LIMIT 60
+		ORDER BY start_timestamp_utc DESC
 	`
 	rows, err := db.Query(query, hutch)
 	if err != nil {
@@ -84,19 +99,103 @@ func GetDatesWithErrors(db *sql.DB, hutch string) ([]DateSummary, error) {
 	}
 	defer rows.Close()
 
-	var dates []DateSummary
+	// Group by Pacific date in Go for proper DST handling
+	type dateAgg struct {
+		fileIDs    map[int]bool
+		errorCount int
+	}
+	dateMap := make(map[string]*dateAgg)
+
 	for rows.Next() {
-		var d DateSummary
-		if err := rows.Scan(&d.Date, &d.FileCount, &d.ErrorCount); err != nil {
+		var fileID int
+		var timestampUTC string
+		var errorCount int
+		if err := rows.Scan(&fileID, &timestampUTC, &errorCount); err != nil {
 			return nil, err
 		}
-		dates = append(dates, d)
+
+		// Convert UTC timestamp to Pacific date
+		pacificDate := utcTimestampToPacificDate(timestampUTC)
+		if pacificDate == "" {
+			continue
+		}
+
+		if agg, ok := dateMap[pacificDate]; ok {
+			if !agg.fileIDs[fileID] {
+				agg.fileIDs[fileID] = true
+			}
+			agg.errorCount += errorCount
+		} else {
+			dateMap[pacificDate] = &dateAgg{
+				fileIDs:    map[int]bool{fileID: true},
+				errorCount: errorCount,
+			}
+		}
 	}
-	return dates, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Convert map to slice and sort
+	var dates []DateSummary
+	for date, agg := range dateMap {
+		dates = append(dates, DateSummary{
+			Date:       date,
+			FileCount:  len(agg.fileIDs),
+			ErrorCount: agg.errorCount,
+		})
+	}
+
+	// Sort by date descending and limit to 60
+	sort.Slice(dates, func(i, j int) bool {
+		return dates[i].Date > dates[j].Date
+	})
+	if len(dates) > 60 {
+		dates = dates[:60]
+	}
+
+	return dates, nil
 }
 
-// LoadErrors loads errors for a specific hutch and date, ordered by timestamp
-func LoadErrors(db *sql.DB, hutch, date string) ([]Error, error) {
+// utcTimestampToPacificDate converts a UTC timestamp string to a Pacific date string (YYYY-MM-DD)
+func utcTimestampToPacificDate(timestamp string) string {
+	if timestamp == "" {
+		return ""
+	}
+
+	// Try common timestamp formats
+	for _, layout := range []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04:05Z",
+	} {
+		if t, err := time.Parse(layout, timestamp); err == nil {
+			t = t.UTC()
+			pacific := utcToPacific(t)
+			return pacific.Format("2006-01-02")
+		}
+	}
+
+	// If just a date, convert as if midnight UTC
+	if len(timestamp) == 10 {
+		if t, err := time.Parse("2006-01-02", timestamp); err == nil {
+			t = t.UTC()
+			pacific := utcToPacific(t)
+			return pacific.Format("2006-01-02")
+		}
+	}
+
+	return ""
+}
+
+// LoadErrors loads errors for a specific hutch and Pacific date, ordered by timestamp
+func LoadErrors(db *sql.DB, hutch, pacificDate string) ([]Error, error) {
+	// Calculate UTC time range for the Pacific date
+	utcStart, utcEnd, err := pacificDateToUTCRange(pacificDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid date format: %w", err)
+	}
+
 	query := `
 		SELECT le.id,
 		       COALESCE(le.timestamp_utc, '') as timestamp,
@@ -108,15 +207,17 @@ func LoadErrors(db *sql.DB, hutch, date string) ([]Error, error) {
 		       le.line_number,
 		       lf.file_path,
 		       COALESCE(le.context_before, '') as ctx_before,
-		       COALESCE(le.context_after, '') as ctx_after
+		       COALESCE(le.context_after, '') as ctx_after,
+		       lf.start_timestamp_utc
 		FROM log_errors le
 		JOIN log_files lf ON le.log_file_id = lf.id
 		WHERE lf.hutch = ?
-		  AND DATE(lf.start_timestamp_utc) = ?
+		  AND lf.start_timestamp_utc >= ?
+		  AND lf.start_timestamp_utc < ?
 		  AND NOT (le.error_type = 'slurm' AND le.message LIKE '%CANCELLED%')
 		  AND NOT (le.error_type = 'slurm' AND le.message LIKE '%Job step aborted%')
 	`
-	rows, err := db.Query(query, hutch, date)
+	rows, err := db.Query(query, hutch, utcStart, utcEnd)
 	if err != nil {
 		return nil, err
 	}
@@ -125,25 +226,36 @@ func LoadErrors(db *sql.DB, hutch, date string) ([]Error, error) {
 	var errors []Error
 	for rows.Next() {
 		var e Error
+		var fileTimestamp string
 		if err := rows.Scan(
 			&e.ID, &e.Timestamp, &e.Component, &e.Host,
 			&e.LogLevel, &e.ErrorType, &e.Message, &e.LineNumber,
-			&e.FilePath, &e.ContextBefore, &e.ContextAfter,
+			&e.FilePath, &e.ContextBefore, &e.ContextAfter, &fileTimestamp,
 		); err != nil {
 			return nil, err
 		}
+
+		// Set DateRef for timezone conversion (use the Pacific date we're querying)
+		e.DateRef = pacificDate
+
 		// Extract time from filepath if timestamp is empty
 		if e.Timestamp == "" {
 			e.Timestamp = extractTimeFromPath(e.FilePath)
 		}
-		errors = append(errors, e)
+
+		// Verify this error actually falls on the target Pacific date
+		// (handles edge cases near midnight)
+		errPacificDate := utcTimestampToPacificDate(fileTimestamp)
+		if errPacificDate == pacificDate {
+			errors = append(errors, e)
+		}
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// Sort by time (chronologically) using filepath timestamp
+	// Sort by time (chronologically) in Pacific time
 	sort.Slice(errors, func(i, j int) bool {
 		ti := getErrorSortTime(errors[i])
 		tj := getErrorSortTime(errors[j])
@@ -157,36 +269,90 @@ func LoadErrors(db *sql.DB, hutch, date string) ([]Error, error) {
 	return errors, nil
 }
 
-// getErrorSortTime extracts a sortable time string from error
-// Returns "HH:MM:SS" format for proper string sorting
-func getErrorSortTime(e Error) string {
-	// First try filepath (most reliable: DD_HH:MM:SS_host:comp.log)
-	timeStr := extractTimeFromPath(e.FilePath)
-	if timeStr != "" {
-		return timeStr // Already HH:MM:SS format
+// pacificDateToUTCRange returns the UTC time range for a Pacific date
+// Returns start (inclusive) and end (exclusive) timestamps
+func pacificDateToUTCRange(pacificDate string) (string, string, error) {
+	// Parse the date in Pacific timezone
+	dateParsed, err := time.ParseInLocation("2006-01-02", pacificDate, pacificLoc)
+	if err != nil {
+		return "", "", err
 	}
 
-	// Fall back to timestamp field
+	// Start of day in Pacific (midnight)
+	startPacific := dateParsed
+
+	// End of day in Pacific (next day midnight)
+	endPacific := startPacific.AddDate(0, 0, 1)
+
+	// Convert to UTC
+	startUTC := startPacific.UTC().Format("2006-01-02 15:04:05")
+	endUTC := endPacific.UTC().Format("2006-01-02 15:04:05")
+
+	return startUTC, endUTC, nil
+}
+
+// getErrorSortTime extracts a sortable time string from error in Pacific time
+// Returns "HH:MM:SS" format for proper string sorting
+func getErrorSortTime(e Error) string {
+	// Try parsing full datetime first (most accurate for timezone conversion)
 	if e.Timestamp != "" {
-		// Try to extract time portion
-		if len(e.Timestamp) >= 8 && e.Timestamp[2] == ':' && e.Timestamp[5] == ':' {
-			return e.Timestamp[:8]
-		}
-		// Try parsing full datetime
 		for _, layout := range []string{
 			"2006-01-02 15:04:05",
 			"2006-01-02T15:04:05",
 		} {
 			if t, err := time.Parse(layout, e.Timestamp); err == nil {
-				return t.Format("15:04:05")
+				t = t.UTC()
+				pacific := utcToPacific(t)
+				return pacific.Format("15:04:05")
 			}
+		}
+	}
+
+	// Try filepath (DD_HH:MM:SS_host:comp.log) with conversion
+	timeStr := extractTimeFromPath(e.FilePath)
+	if timeStr != "" {
+		converted := convertTimeWithDateHHMMSS(timeStr, e.DateRef)
+		if converted != "" {
+			return converted
+		}
+		return timeStr // Fallback to original if conversion fails
+	}
+
+	// Fall back to timestamp time portion with conversion
+	if e.Timestamp != "" && len(e.Timestamp) >= 8 && e.Timestamp[2] == ':' && e.Timestamp[5] == ':' {
+		converted := convertTimeWithDateHHMMSS(e.Timestamp[:8], e.DateRef)
+		if converted != "" {
+			return converted
 		}
 	}
 
 	return "99:99:99" // Sort unknown times to end
 }
 
-// FindNearestErrorIndex finds the error closest to targetTime (HH:MM format)
+// convertTimeWithDateHHMMSS converts a time string (HH:MM:SS) to Pacific time, returning HH:MM:SS
+func convertTimeWithDateHHMMSS(timeStr, dateRef string) string {
+	if len(timeStr) < 8 {
+		return ""
+	}
+
+	// Use reference date if provided, otherwise use current date
+	if dateRef == "" {
+		dateRef = time.Now().UTC().Format("2006-01-02")
+	}
+
+	// Parse as UTC datetime
+	fullDateTime := dateRef + " " + timeStr
+	t, err := time.Parse("2006-01-02 15:04:05", fullDateTime)
+	if err != nil {
+		return ""
+	}
+
+	t = t.UTC()
+	pacific := utcToPacific(t)
+	return pacific.Format("15:04:05")
+}
+
+// FindNearestErrorIndex finds the error closest to targetTime (HH:MM format in Pacific time)
 func FindNearestErrorIndex(errors []Error, targetTime string) int {
 	if len(errors) == 0 {
 		return 0
@@ -201,7 +367,7 @@ func FindNearestErrorIndex(errors []Error, targetTime string) int {
 	bestDiff := math.MaxInt32
 
 	for i, e := range errors {
-		errTime := extractTimeHHMM(e.Timestamp, e.FilePath)
+		errTime := extractTimeHHMM(e.Timestamp, e.FilePath, e.DateRef)
 		errMinutes := parseTimeToMinutes(errTime)
 		if errMinutes < 0 {
 			continue
@@ -231,31 +397,72 @@ func extractTimeFromPath(path string) string {
 	return ""
 }
 
-// extractTimeHHMM gets HH:MM from timestamp or filepath
-func extractTimeHHMM(timestamp, filepath string) string {
+// extractTimeHHMM gets HH:MM from timestamp or filepath, converting UTC to Pacific
+// dateRef is a reference date (YYYY-MM-DD) used when timestamp doesn't contain a full date
+func extractTimeHHMM(timestamp, filepath, dateRef string) string {
 	if timestamp != "" {
-		// Try to parse as time
+		// Try full datetime format first (has date for proper DST handling)
+		if t, err := time.Parse("2006-01-02 15:04:05", timestamp); err == nil {
+			t = t.UTC() // Ensure it's treated as UTC
+			pacific := utcToPacific(t)
+			return pacific.Format("15:04")
+		}
+
+		// Try time-only formats - need to combine with reference date
 		for _, layout := range []string{
-			"2006-01-02 15:04:05",
 			"15:04:05",
 			"15:04",
 		} {
 			if t, err := time.Parse(layout, timestamp); err == nil {
-				return t.Format("15:04")
+				return convertTimeWithDate(t.Format("15:04:05"), dateRef)
 			}
 		}
-		// Just take first 5 chars if looks like HH:MM
+
+		// Just take first 5 chars if looks like HH:MM and convert
 		if len(timestamp) >= 5 && timestamp[2] == ':' {
-			return timestamp[:5]
+			timeStr := timestamp
+			if len(timeStr) < 8 {
+				timeStr = timestamp[:5] + ":00"
+			}
+			return convertTimeWithDate(timeStr[:8], dateRef)
 		}
 	}
 
 	// Fallback to filepath
 	timeStr := extractTimeFromPath(filepath)
-	if len(timeStr) >= 5 {
-		return timeStr[:5]
+	if timeStr != "" {
+		return convertTimeWithDate(timeStr, dateRef)
 	}
 	return ""
+}
+
+// convertTimeWithDate converts a time string (HH:MM:SS) to Pacific time using a reference date
+func convertTimeWithDate(timeStr, dateRef string) string {
+	if len(timeStr) < 5 {
+		return ""
+	}
+
+	// Use reference date if provided, otherwise use current date
+	if dateRef == "" {
+		dateRef = time.Now().UTC().Format("2006-01-02")
+	}
+
+	// Ensure we have HH:MM:SS format
+	if len(timeStr) == 5 {
+		timeStr = timeStr + ":00"
+	}
+
+	// Parse as UTC datetime
+	fullDateTime := dateRef + " " + timeStr
+	t, err := time.Parse("2006-01-02 15:04:05", fullDateTime)
+	if err != nil {
+		// Fallback: return first 5 chars without conversion
+		return timeStr[:5]
+	}
+
+	t = t.UTC()
+	pacific := utcToPacific(t)
+	return pacific.Format("15:04")
 }
 
 // parseTimeToMinutes converts HH:MM to minutes since midnight
