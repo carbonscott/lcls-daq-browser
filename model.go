@@ -65,6 +65,7 @@ type keyMap struct {
 	CriticalOnly key.Binding
 	Search       key.Binding
 	ClearFilter  key.Binding
+	Refresh      key.Binding
 }
 
 func defaultKeyMap() keyMap {
@@ -133,11 +134,15 @@ func defaultKeyMap() keyMap {
 			key.WithKeys("a"),
 			key.WithHelp("a", "show all"),
 		),
+		Refresh: key.NewBinding(
+			key.WithKeys("r"),
+			key.WithHelp("r", "refresh"),
+		),
 	}
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.JumpTime, k.CriticalOnly, k.Search, k.ClearFilter, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.JumpTime, k.CriticalOnly, k.Search, k.ClearFilter, k.Refresh, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {

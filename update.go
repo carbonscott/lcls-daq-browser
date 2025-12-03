@@ -291,6 +291,24 @@ func (m Model) updateErrorList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Clear all filters
 	case key.Matches(msg, m.keys.ClearFilter):
 		m.clearFilters()
+
+	// Refresh data from database
+	case key.Matches(msg, m.keys.Refresh):
+		errors, err := LoadErrors(m.db, m.selectedHutch, m.selectedDate)
+		if err != nil {
+			m.err = err
+			return m, nil
+		}
+		m.allErrors = errors
+		m.applyFilters()
+		// Adjust cursors if they exceed new bounds
+		if m.groupCursor >= len(m.groups) {
+			m.groupCursor = len(m.groups) - 1
+			if m.groupCursor < 0 {
+				m.groupCursor = 0
+			}
+		}
+		m.updateContextPane()
 	}
 
 	return m, nil
