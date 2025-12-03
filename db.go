@@ -9,6 +9,26 @@ import (
 	"time"
 )
 
+// =============================================================================
+// Timezone Conventions
+// =============================================================================
+//
+// This codebase handles three different timestamp sources with different timezones:
+//
+// 1. LOG FILENAMES: Times are in PACIFIC TIME (America/Los_Angeles)
+//    Format: DD_HH:MM:SS_host:component.log (e.g., 02_08:00:57_rix-daq:xpmpva.log)
+//    The HH:MM:SS is the local Pacific time when the DAQ process started.
+//
+// 2. DATABASE (start_timestamp_utc, timestamp_utc): Times are in UTC
+//    The ingestion script (ingest_daq_logs.py) converts Pacific → UTC before storing.
+//
+// 3. DISPLAY: Times are shown in PACIFIC TIME
+//    The browser converts UTC timestamps back to Pacific for display.
+//
+// IMPORTANT: When extracting time from filenames for display, do NOT convert
+// (it's already Pacific). Only convert times read from database fields.
+// =============================================================================
+
 // Pacific timezone for LCLS (handles DST automatically)
 var pacificLoc *time.Location
 
@@ -238,10 +258,10 @@ func LoadErrors(db *sql.DB, hutch, pacificDate string) ([]Error, error) {
 		// Set DateRef for timezone conversion (use the Pacific date we're querying)
 		e.DateRef = pacificDate
 
-		// Extract time from filepath if timestamp is empty
-		if e.Timestamp == "" {
-			e.Timestamp = extractTimeFromPath(e.FilePath)
-		}
+		// Note: We intentionally do NOT populate e.Timestamp from filepath here.
+		// The display functions (extractTimeHHMM, getErrorSortTime) have fallback
+		// logic to extract from filepath, and they know not to convert it since
+		// filepath times are already in Pacific. See Timezone Conventions above.
 
 		// Verify this error actually falls on the target Pacific date
 		// (handles edge cases near midnight)
@@ -308,14 +328,10 @@ func getErrorSortTime(e Error) string {
 		}
 	}
 
-	// Try filepath (DD_HH:MM:SS_host:comp.log) with conversion
+	// Try filepath (DD_HH:MM:SS_host:comp.log) - already in Pacific time
 	timeStr := extractTimeFromPath(e.FilePath)
 	if timeStr != "" {
-		converted := convertTimeWithDateHHMMSS(timeStr, e.DateRef)
-		if converted != "" {
-			return converted
-		}
-		return timeStr // Fallback to original if conversion fails
+		return timeStr // Return directly, no conversion needed (see Timezone Conventions above)
 	}
 
 	// Fall back to timestamp time portion with conversion
@@ -428,15 +444,15 @@ func extractTimeHHMM(timestamp, filepath, dateRef string) string {
 		}
 	}
 
-	// Fallback to filepath
+	// Fallback to filepath - time in filename is already Pacific (see Timezone Conventions above)
 	timeStr := extractTimeFromPath(filepath)
 	if timeStr != "" {
-		return convertTimeWithDate(timeStr, dateRef)
+		return timeStr[:5] // Return HH:MM directly, no conversion needed
 	}
 	return ""
 }
 
-// convertTimeWithDate converts a time string (HH:MM:SS) to Pacific time using a reference date
+// convertTimeWithDate converts a UTC time string (HH:MM:SS) to Pacific time using a reference date
 func convertTimeWithDate(timeStr, dateRef string) string {
 	if len(timeStr) < 5 {
 		return ""

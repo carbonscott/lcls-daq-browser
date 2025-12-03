@@ -173,3 +173,17 @@ The tool expects a SQLite database with the following tables:
 | message | TEXT | Error message |
 | context_before | TEXT | 10 lines before error |
 | context_after | TEXT | 10 lines after error |
+
+## Timezone Handling
+
+All timestamps are displayed in **Pacific Time** (America/Los_Angeles) since LCLS is located in California.
+
+**Data flow:**
+
+| Source | Timezone | Notes |
+|--------|----------|-------|
+| Log filenames | Pacific | `DD_HH:MM:SS_host:component.log` |
+| Database storage | UTC | Ingestion converts Pacific to UTC |
+| Browser display | Pacific | Converts UTC to Pacific for display |
+
+When modifying timestamp-related code in `db.go`, see the timezone documentation comments at the top of that file.
