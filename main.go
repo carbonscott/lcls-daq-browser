@@ -47,8 +47,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Open database
-	db, err := sql.Open("sqlite3", *dbPath+"?mode=ro")
+	// Open database in immutable mode (read-only, no locking)
+	db, err := sql.Open("sqlite3", "file:"+*dbPath+"?immutable=1")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
